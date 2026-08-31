@@ -987,6 +987,7 @@
     </label>
   </div>
   <div id="devSlidersRow" class="toolbar-row dev-ui" style="display:none;gap:18px;flex-wrap:nowrap;overflow-x:auto;padding-top:4px;border-top:1px solid var(--ui-border)">
+    <div class="dev-row"><label>arrow px</label><input type="range" id="slArrowMaxPx" min="50" max="500" step="5" value="220"><span class="dev-val" id="slArrowMaxPxVal">220</span></div>
     <div class="dev-row shells-bond-dot-row"><label>B offset°</label><input type="range" id="slBondSectorOffsetB" min="0" max="90" step="1" value="35"><span class="dev-val" id="slBondSectorOffsetBVal">35</span></div>
     <div class="dev-row shells-bond-dot-row"><label>B arc°</label><input type="range" id="slBondSectorArcB" min="60" max="360" step="5" value="320"><span class="dev-val" id="slBondSectorArcBVal">320</span></div>
     <div class="dev-row" style="display:none"><label>k</label><input type="range" id="slK" min="1000" max="500000" step="5000" value="140000"><span class="dev-val" id="slKVal">140000</span></div>
@@ -1934,6 +1935,12 @@ const ELECTRONEGATIVITY = {
   26: 1.83, 29: 1.90, 30: 1.65, 32: 2.01, 35: 2.96, 36: null,
   50: 1.96, 82: 1.87,
 };
+// Noble gas effective EN for force-arrow display (20% above neighbor, He special)
+const _NOBLE_EN = { 2: 5.2, 10: 4.8, 18: 3.8, 36: 3.55 };
+function _enForArrow(Z) { return _NOBLE_EN[Z] ?? ELECTRONEGATIVITY[Z] ?? 1.0; }
+// Arrow length in screen pixels for He (EN 5.2); all others scale proportionally.
+// Stored as a let so the dev slider can adjust it live.
+let _arrowMaxScreenPx = 220;
 
 function getBondRatio() {
   const enA = ELECTRONEGATIVITY[customZ];
@@ -2152,7 +2159,7 @@ function drawOrbit3D(ctx) {
     const FV_NUC = LIGHT ? 'rgba(160,0,90,0.92)' : FV_NUC_COLOR;
     const vz = viewZoom;
     ctx.save();
-    const drawForceRing = (scx, scy, screenR, color) => {
+    const drawForceRing = (scx, scy, screenR, color, Z) => {
       ctx.strokeStyle = color;
       ctx.lineWidth = 1.2;
       ctx.globalAlpha = 0.55;
@@ -2160,23 +2167,26 @@ function drawOrbit3D(ctx) {
       ctx.beginPath(); ctx.arc(scx, scy, screenR, 0, Math.PI * 2); ctx.stroke();
       ctx.setLineDash([]);
       ctx.globalAlpha = 1;
-      const arrowLen = screenR * 0.70;
+      // Arrow length fixed in screen px, proportional to EN
+      const arrowLen = _arrowMaxScreenPx * _enForArrow(Z) / 5.2;
       const headLen  = arrowLen * 0.32;
+      // If arrow would reach past center, shift origin outward so tip lands exactly at center
+      const startR = Math.max(screenR, arrowLen);
       for (let i = 0; i < 6; i++) {
         const angle = (i / 6) * Math.PI * 2;
         fvArrowOnCtx(ctx,
-          scx + Math.cos(angle) * screenR, scy + Math.sin(angle) * screenR,
+          scx + Math.cos(angle) * startR, scy + Math.sin(angle) * startR,
           -Math.cos(angle), -Math.sin(angle),
           arrowLen, color, 2, headLen);
       }
     };
     if (animParent && electrons.length) {
       const outerSA = Math.max(...electrons.map(e => e.shell));
-      drawForceRing(cxA, centerY, getShellRadius(outerSA) * vz, _valenceColorForZ(customZ));
+      drawForceRing(cxA, centerY, getShellRadius(outerSA) * vz, _valenceColorForZ(customZ), customZ);
     }
     if (animParentB && electronsB.length) {
       const outerSB = Math.max(...electronsB.map(e => e.shell));
-      drawForceRing(cxB, centerY, getShellRadiusForZ(outerSB, atomBZ) * vz, _valenceColorForZ(atomBZ));
+      drawForceRing(cxB, centerY, getShellRadiusForZ(outerSB, atomBZ) * vz, _valenceColorForZ(atomBZ), atomBZ);
     }
     ctx.restore();
   }
@@ -4075,7 +4085,7 @@ function draw() {
     const FV_REP = LIGHT ? 'rgba(0,100,160,0.92)' : FV_REP_COLOR;
 
     // Helper: draw dotted ring + 6 inward arrows for one atom
-    const drawAtomForceRing = (cx, cy, shellR, color) => {
+    const drawAtomForceRing = (cx, cy, shellR, color, Z) => {
       ctx.strokeStyle = color;
       ctx.lineWidth = 1.2 / vz;
       ctx.globalAlpha = 0.55;
@@ -4083,12 +4093,15 @@ function draw() {
       ctx.beginPath(); ctx.arc(cx, cy, shellR, 0, Math.PI * 2); ctx.stroke();
       ctx.setLineDash([]);
       ctx.globalAlpha = 1;
-      const arrowLen = shellR * 0.70;
+      // Arrow length is fixed in screen px (zoom-independent): divide by vz to get world px
+      const arrowLen = (_arrowMaxScreenPx * _enForArrow(Z) / 5.2) / vz;
       const headLen  = arrowLen * 0.32;
+      // If arrow would reach past center, shift origin outward so tip lands exactly at center
+      const startR = Math.max(shellR, arrowLen);
       for (let i = 0; i < 6; i++) {
         const angle = (i / 6) * Math.PI * 2;
         fvArrowOnCtx(ctx,
-          cx + Math.cos(angle) * shellR, cy + Math.sin(angle) * shellR,
+          cx + Math.cos(angle) * startR, cy + Math.sin(angle) * startR,
           -Math.cos(angle), -Math.sin(angle),
           arrowLen, color, lw, headLen);
       }
@@ -4097,13 +4110,13 @@ function draw() {
     // Atom A shell ring
     if (animParent && electrons.length) {
       const outerSA = Math.max(...electrons.map(e => e.shell));
-      drawAtomForceRing(animParent.cx, animParent.cy, getShellRadius(outerSA), _valenceColorForZ(customZ));
+      drawAtomForceRing(animParent.cx, animParent.cy, getShellRadius(outerSA), _valenceColorForZ(customZ), customZ);
     }
     // Atom B shell ring (bond mode)
     if (animParentB && electronsB.length) {
       const outerSB = Math.max(...electronsB.map(e => e.shell));
       const shellRB = getShellRadiusForZ(outerSB, atomBZ);
-      drawAtomForceRing(animParent.cx + sep, animParent.cy, shellRB, _valenceColorForZ(atomBZ));
+      drawAtomForceRing(animParent.cx + sep, animParent.cy, shellRB, _valenceColorForZ(atomBZ), atomBZ);
     }
 
     // Selection ring
@@ -4957,6 +4970,7 @@ var syncShellDevSliders = function() {}; // populated by _wireDevSliders once sh
   bind('slTrail',  'slTrailVal',  v => { eTrailLen = Math.round(v); for (const e of electrons) { if (e.trail.length > eTrailLen) e.trail.splice(0, e.trail.length - eTrailLen); } }, v => Math.round(v));
   bind('slBaseR',  'slBaseRVal',  v => { shellBaseR  = v; }, v => v.toFixed(0));
   bind('slElectronDot', 'slElectronDotVal', v => { electronDotR = v; }, v => v.toFixed(1));
+  bind('slArrowMaxPx', 'slArrowMaxPxVal', v => { _arrowMaxScreenPx = v; }, v => Math.round(v));
   bind('slFvExp', 'slFvExpVal', v => { fvArrowExp = v; }, v => v.toFixed(2));
   bind('slRadialJitter', 'slRadialJitterVal', v => { eRadialJitter = v; }, v => v.toFixed(3));
   bind('slAngularJitter', 'slAngularJitterVal', v => { SHELL_JITTER = v; }, v => v.toFixed(4));
