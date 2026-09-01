@@ -830,7 +830,7 @@
       <button class="tab-btn" data-mode="molecules">Molecules</button>
     </div>
     <div style="display:flex;align-items:center;gap:6px;margin-left:auto;">
-      <span style="font-size:10px;font-weight:600;letter-spacing:0.06em;color:rgba(255,255,255,0.45);white-space:nowrap;">Field Test Version 1.1</span>
+      <span style="font-size:10px;font-weight:600;letter-spacing:0.06em;color:rgba(255,255,255,0.45);white-space:nowrap;">Field Test Version 1.2</span>
       <select id="qualitySelect">
         <option value="hi-res">Hi-res</option>
         <option value="simple">Simple</option>
@@ -2027,18 +2027,18 @@ function _o3Precess(ax, rot, angle) {
   ]);
 }
 
-function stepOrbit3D() {
+function stepOrbit3D(dt = 1) {
   const occupied = [...new Set(electrons.map(e => e.shell))];
   for (const s of occupied) {
     const sp      = orbShellSpeed[s]    ?? 8;
     const radAmp  = orbShellRadAmp[s]   ?? 0.2;
     const wandDeg = orbShellWander[s]   ?? 45;
     const maxLen  = orbShellTrailLen[s] ?? 140;
-    const phStep  = 0.05 * sp;
+    const phStep  = 0.05 * sp * dt;
     for (const grp of orb3dShellGroups[s]) {
-      grp.radPh += 0.036 * sp;
+      grp.radPh += 0.036 * sp * dt;
       const r = 1 + radAmp * Math.sin(grp.radPh);
-      const precSpeed = 0.006 * sp * (wandDeg / 45);
+      const precSpeed = 0.006 * sp * (wandDeg / 45) * dt;
       grp.ax = _o3Precess(grp.ax, grp.rot, precSpeed);
       grp.e1 = _o3Precess(grp.e1, grp.rot, precSpeed);
       const e1 = grp.e1;
@@ -2058,6 +2058,7 @@ function stepOrbit3D() {
 function _drawOrbit3DCore(ctx, cx, cy, elecs, shellGroups, Z) {
   if (!elecs.length) return;
   const LIGHT = document.body.classList.contains('screenshot-mode');
+  const W = canvas.width;
   const AZ = orb3dAZ, EL = orb3dEL;
   const cosAZ = Math.cos(AZ), sinAZ = Math.sin(AZ), cosEL = Math.cos(EL), sinEL = Math.sin(EL);
   function proj3D(nx, ny, nz, r3d) {
@@ -2067,44 +2068,83 @@ function _drawOrbit3DCore(ctx, cx, cy, elecs, shellGroups, Z) {
   }
   const occupied = [...new Set(elecs.map(e => e.shell))].sort((a,b)=>a-b);
   const _outerS3D = occupied.length ? occupied[occupied.length - 1] : 0;
-  // Trails
+  const _nB = _quality === 'hi-res' ? 32 : _quality === 'detailed' ? 4 : 2;
   const _trailMaxAlpha = LIGHT ? 0.92 : 0.75;
-  const _visHH = cy - document.getElementById('toolbar').offsetHeight;
   ctx.lineWidth = 1.5;
+  ctx.lineCap = 'round';
   for (const s of occupied) {
     const r3d = getShellRadiusForZ(s, Z) * orb3dRadScale * viewZoom;
-    const _shellOffScreen = r3d > _visHH * 1.2;
-    const col = LIGHT ? _darkenHex(_shellColorForZ(s, Z, _outerS3D)) : _shellColorForZ(s, Z, _outerS3D);
+    const _shellOffScreen = r3d > W * 0.6;
+    if (_shellOffScreen && _quality !== 'hi-res') continue;
+    const defaultCol = LIGHT ? _darkenHex(_shellColorForZ(s, Z, _outerS3D)) : _shellColorForZ(s, Z, _outerS3D);
+
+    // Pre-project all electrons in shell, grouped by effective color
+    const colorPts = new Map();
     for (const grp of shellGroups[s]) {
-      const grpCol = grp.colorOverride ?? col;
-      for (let ei=0; ei<grp.count; ei++) {
+      const grpCol = grp.colorOverride ? (LIGHT ? _darkenHex(grp.colorOverride) : grp.colorOverride) : defaultCol;
+      if (!colorPts.has(grpCol)) colorPts.set(grpCol, []);
+      const bucket = colorPts.get(grpCol);
+      for (let ei = 0; ei < grp.count; ei++) {
         const trail = grp.trails[ei], n = trail.length;
-        for (let i=1; i<n; i++) {
-          const p0=trail[i-1], p1=trail[i];
-          const [sx0,sy0]=proj3D(p0[0],p0[1],p0[2],r3d);
-          const [sx1,sy1]=proj3D(p1[0],p1[1],p1[2],r3d);
-          ctx.globalAlpha=(i/n)*_trailMaxAlpha; ctx.strokeStyle=grpCol;
-          ctx.beginPath(); ctx.moveTo(sx0,sy0); ctx.lineTo(sx1,sy1); ctx.stroke();
+        if (n < 2) { bucket.push(null); continue; }
+        const pts = [];
+        for (let i = 0; i < n; i++) pts.push(proj3D(trail[i][0], trail[i][1], trail[i][2], r3d));
+        bucket.push(pts);
+      }
+    }
+
+    // Strokes: one beginPath+stroke per (color, bucket)
+    for (const [col, ptsList] of colorPts) {
+      ctx.strokeStyle = col;
+      for (let b = 0; b < _nB; b++) {
+        const _a = ((b + 1) / _nB) * _trailMaxAlpha;
+        ctx.globalAlpha = (_nB !== 32 && b === 0) ? _a * 0.5 : _a;
+        ctx.beginPath();
+        for (const pts of ptsList) {
+          if (!pts) continue;
+          const np = pts.length;
+          const i0 = Math.round(b / _nB * (np - 1));
+          const i1 = Math.round((b + 1) / _nB * (np - 1));
+          if (i1 <= i0) continue;
+          ctx.moveTo(pts[i0][0], pts[i0][1]);
+          const mid0x = (pts[i0][0] + pts[Math.min(i0+1,np-1)][0]) / 2;
+          const mid0y = (pts[i0][1] + pts[Math.min(i0+1,np-1)][1]) / 2;
+          ctx.lineTo(mid0x, mid0y);
+          for (let i = i0 + 1; i < i1; i++)
+            ctx.quadraticCurveTo(pts[i][0], pts[i][1], (pts[i][0]+pts[i+1][0])/2, (pts[i][1]+pts[i+1][1])/2);
+          ctx.lineTo(pts[i1][0], pts[i1][1]);
         }
-        ctx.globalAlpha=1;
-        if (orb3dDotR>0 && n>0 && !_shellOffScreen) {
-          const tip=trail[n-1]; const [tx,ty]=proj3D(tip[0],tip[1],tip[2],r3d);
-          const prev=trail[Math.max(0,n-3)]; const [px2,py2]=proj3D(prev[0],prev[1],prev[2],r3d);
-          let dx=tx-px2, dy=ty-py2; const dl=Math.sqrt(dx*dx+dy*dy);
-          if (dl>0.5){dx/=dl;dy/=dl;}else{dx=1;dy=0;}
-          const _as=s===occupied[0]?1.3:1.0;
-          const W=Math.min(orb3dDotR*r3d/200*0.65*_as, 7.5), L=W/0.65, perpx=-dy, perpy=dx;
-          ctx.fillStyle=grpCol; ctx.beginPath();
-          ctx.moveTo(tx+dx*L,           ty+dy*L);
-          ctx.lineTo(tx-dx*L+perpx*W,   ty-dy*L+perpy*W);
-          ctx.lineTo(tx-dx*L*0.25,      ty-dy*L*0.25);
-          ctx.lineTo(tx-dx*L-perpx*W,   ty-dy*L-perpy*W);
-          ctx.closePath(); ctx.fill();
+        ctx.stroke();
+      }
+    }
+
+    // Arrows: one fill per color group
+    ctx.globalAlpha = 1;
+    if (orb3dDotR > 0 && !_shellOffScreen) {
+      const _as = s === occupied[0] ? 1.3 : 1.0;
+      for (const [col, ptsList] of colorPts) {
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        for (const pts of ptsList) {
+          if (!pts) continue;
+          const np = pts.length;
+          const [tx, ty] = pts[np - 1];
+          const [px2, py2] = pts[Math.max(0, np - 3)];
+          let dx = tx - px2, dy = ty - py2;
+          const dl = Math.sqrt(dx*dx + dy*dy);
+          if (dl > 0.5) { dx /= dl; dy /= dl; } else { dx = 1; dy = 0; }
+          const _aw = Math.min(orb3dDotR * r3d / 200 * 0.65 * _as, 7.5), _al = _aw / 0.65, perpx = -dy, perpy = dx;
+          ctx.moveTo(tx + dx*_al,             ty + dy*_al);
+          ctx.lineTo(tx - dx*_al + perpx*_aw, ty - dy*_al + perpy*_aw);
+          ctx.lineTo(tx - dx*_al * 0.25,      ty - dy*_al * 0.25);
+          ctx.lineTo(tx - dx*_al - perpx*_aw, ty - dy*_al - perpy*_aw);
+          ctx.closePath();
         }
+        ctx.fill();
       }
     }
   }
-  ctx.globalAlpha=1;
+  ctx.globalAlpha = 1;
 }
 
 function drawOrbit3D(ctx) {
@@ -2145,13 +2185,127 @@ function drawOrbit3D(ctx) {
     ctx.restore();
   }
 
-  // Orbit trails — orb3dShellGroups already has bond electron(s) removed for atom A.
-  // When bondShellsSubtractAllA (e.g. Cu), ALL outer shell electrons are cleared.
-  if (animParent && electrons.length) _drawOrbit3DCore(ctx, cxA, centerY, electrons, orb3dShellGroups, customZ);
-  if (animParentB && electronsB.length) _drawOrbit3DCore(ctx, cxB, centerY, electronsB, orb3dShellGroupsB, atomBZ);
+  // Unified trail rendering: orbital trails from both atoms + bond electrons,
+  // batched by color — three colors → 3×_nB total stroke calls.
+  {
+    const LIGHT = document.body.classList.contains('screenshot-mode');
+    const AZ = orb3dAZ, EL = orb3dEL;
+    const cosAZ = Math.cos(AZ), sinAZ = Math.sin(AZ), cosEL = Math.cos(EL), sinEL = Math.sin(EL);
+    function proj3DA(nx, ny, nz, r3d) {
+      const x=nx*r3d, y=ny*r3d, z=nz*r3d, rx=x*cosAZ+z*sinAZ, ry=y, rz=-x*sinAZ+z*cosAZ;
+      return [cxA+rx, centerY-(ry*cosEL-rz*sinEL)];
+    }
+    function proj3DB(nx, ny, nz, r3d) {
+      const x=nx*r3d, y=ny*r3d, z=nz*r3d, rx=x*cosAZ+z*sinAZ, ry=y, rz=-x*sinAZ+z*cosAZ;
+      return [cxB+rx, centerY-(ry*cosEL-rz*sinEL)];
+    }
+    const _nB = _quality === 'hi-res' ? 32 : _quality === 'detailed' ? 4 : 2;
+    const _trailMaxAlpha = LIGHT ? 0.92 : 0.75;
+    const colorPts  = new Map();  // color → pts[][]
+    const arrowData = new Map();  // color → [{tx,ty,px2,py2,_aw,_al}]
 
-  // Bond electron + EN stats label
-  _drawBondElecTrails(ctx, cxA, cxB, centerY);
+    function _collect(proj, shellGroups, elecs, Z) {
+      if (!elecs.length) return;
+      const occupied = [...new Set(elecs.map(e => e.shell))].sort((a,b)=>a-b);
+      const _outerS = occupied[occupied.length - 1];
+      for (const s of occupied) {
+        const r3d = getShellRadiusForZ(s, Z) * orb3dRadScale * viewZoom;
+        const _shellOffScreen = r3d > W * 0.6;
+        if (_shellOffScreen && _quality !== 'hi-res') continue;
+        const defaultCol = LIGHT ? _darkenHex(_shellColorForZ(s, Z, _outerS)) : _shellColorForZ(s, Z, _outerS);
+        for (const grp of shellGroups[s]) {
+          const grpCol = grp.colorOverride ? (LIGHT ? _darkenHex(grp.colorOverride) : grp.colorOverride) : defaultCol;
+          if (!colorPts.has(grpCol)) colorPts.set(grpCol, []);
+          const bucket = colorPts.get(grpCol);
+          for (let ei = 0; ei < grp.count; ei++) {
+            const trail = grp.trails[ei], n = trail.length;
+            if (n < 2) { bucket.push(null); continue; }
+            const pts = [];
+            for (let i = 0; i < n; i++) pts.push(proj(trail[i][0], trail[i][1], trail[i][2], r3d));
+            bucket.push(pts);
+            if (orb3dDotR > 0 && !_shellOffScreen) {
+              if (!arrowData.has(grpCol)) arrowData.set(grpCol, []);
+              const [tx, ty] = pts[n - 1];
+              const [px2, py2] = pts[Math.max(0, n - 3)];
+              const _as = s === occupied[0] ? 1.3 : 1.0;
+              const _aw = Math.min(orb3dDotR * r3d / 200 * 0.65 * _as, 7.5), _al = _aw / 0.65;
+              arrowData.get(grpCol).push({ tx, ty, px2, py2, _aw, _al });
+            }
+          }
+        }
+      }
+    }
+
+    _collect(proj3DA, orb3dShellGroups,  electrons,  customZ);
+    _collect(proj3DB, orb3dShellGroupsB, electronsB, atomBZ);
+
+    // Bond electrons — 2D screen-space, merged into their atom's valence color group
+    if (animParentB && (bondShellsSubtractA || bondShellsSubtractB) && bondTrailLen > 0) {
+      const sepScreen = cxB - cxA;
+      const _colA = electrons.length  ? _valenceColorForZ(customZ) : '#aaaaaa';
+      const _colB = electronsB.length ? _valenceColorForZ(atomBZ)  : '#aaaaaa';
+      const colA = LIGHT ? _darkenHex(_colA) : _colA;
+      const colB = LIGHT ? _darkenHex(_colB) : _colB;
+      [[bondElecFracs, colA], [bondElecFracs2, colB]].forEach(([fracs, col]) => {
+        if (fracs.length < 2) return;
+        const pts = fracs.map(f => [cxA + f.frac * sepScreen, centerY + f.perp * sepScreen]);
+        if (!colorPts.has(col)) colorPts.set(col, []);
+        colorPts.get(col).push(pts);
+        if (!arrowData.has(col)) arrowData.set(col, []);
+        const n = pts.length;
+        arrowData.get(col).push({ tx: pts[n-1][0], ty: pts[n-1][1],
+                                  px2: pts[Math.max(0,n-2)][0], py2: pts[Math.max(0,n-2)][1],
+                                  _aw: 5, _al: 11 });
+      });
+    }
+
+    // Strokes: one beginPath+stroke per (color, bucket)
+    ctx.lineWidth = 1.5;
+    ctx.lineCap = 'round';
+    for (const [col, ptsList] of colorPts) {
+      ctx.strokeStyle = col;
+      for (let b = 0; b < _nB; b++) {
+        const _a = ((b + 1) / _nB) * _trailMaxAlpha;
+        ctx.globalAlpha = (_nB !== 32 && b === 0) ? _a * 0.5 : _a;
+        ctx.beginPath();
+        for (const pts of ptsList) {
+          if (!pts) continue;
+          const np = pts.length;
+          const i0 = Math.round(b / _nB * (np - 1));
+          const i1 = Math.round((b + 1) / _nB * (np - 1));
+          if (i1 <= i0) continue;
+          ctx.moveTo(pts[i0][0], pts[i0][1]);
+          const mid0x = (pts[i0][0] + pts[Math.min(i0+1,np-1)][0]) / 2;
+          const mid0y = (pts[i0][1] + pts[Math.min(i0+1,np-1)][1]) / 2;
+          ctx.lineTo(mid0x, mid0y);
+          for (let i = i0 + 1; i < i1; i++)
+            ctx.quadraticCurveTo(pts[i][0], pts[i][1], (pts[i][0]+pts[i+1][0])/2, (pts[i][1]+pts[i+1][1])/2);
+          ctx.lineTo(pts[i1][0], pts[i1][1]);
+        }
+        ctx.stroke();
+      }
+    }
+
+    // Arrows: one fill call per color
+    ctx.globalAlpha = 1;
+    for (const [col, arrows] of arrowData) {
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      for (const { tx, ty, px2, py2, _aw, _al } of arrows) {
+        let dx = tx - px2, dy = ty - py2;
+        const dl = Math.sqrt(dx*dx + dy*dy);
+        if (dl > 0.5) { dx /= dl; dy /= dl; } else { dx = 1; dy = 0; }
+        const perpx = -dy, perpy = dx;
+        ctx.moveTo(tx + dx*_al,             ty + dy*_al);
+        ctx.lineTo(tx - dx*_al + perpx*_aw, ty - dy*_al + perpy*_aw);
+        ctx.lineTo(tx - dx*_al * 0.25,      ty - dy*_al * 0.25);
+        ctx.lineTo(tx - dx*_al - perpx*_aw, ty - dy*_al - perpy*_aw);
+        ctx.closePath();
+      }
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
   drawBondENLabel(ctx);
 
   // ── Force rings drawn in screen space ───────────────────────────────────────
@@ -2253,16 +2407,16 @@ function syncOrb3dShellSlidersB() {
   }
 }
 
-function stepOrbit3DB() {
+function stepOrbit3DB(dt = 1) {
   const occupied=[...new Set(electronsB.map(e=>e.shell))];
   for (const s of occupied) {
     const sp=orbShellSpeed[s]??8, radAmp=orbShellRadAmp[s]??0.2;
     const wandDeg=orbShellWander[s]??45, maxLen=orbShellTrailLen[s]??140;
-    const phStep=0.05*sp;
+    const phStep=0.05*sp*dt;
     for (const grp of orb3dShellGroupsB[s]) {
-      grp.radPh+=0.036*sp;
+      grp.radPh+=0.036*sp*dt;
       const r=1+radAmp*Math.sin(grp.radPh);
-      const precSpeed=0.006*sp*(wandDeg/45);
+      const precSpeed=0.006*sp*(wandDeg/45)*dt;
       grp.ax=_o3Precess(grp.ax,grp.rot,precSpeed);
       grp.e1=_o3Precess(grp.e1,grp.rot,precSpeed);
       const e1=grp.e1, e2=_o3Cross(grp.ax,e1);
@@ -4372,6 +4526,7 @@ document.getElementById('energyGraphToggle').addEventListener('click', function(
 });
 
 let idleParticleRAF = null;
+let _orb3dLast = 0;
 // ─── Molecule mode ────────────────────────────────────────────────────────────
 
 // Distribute n angles evenly in the largest gap between taken sector centers.
@@ -4736,18 +4891,18 @@ function _buildMolShellGroups(elecs) {
 }
 
 // Advance orbit3D physics for all molecule sites (same physics as stepOrbit3D).
-function stepMolOrbit3D() {
+function stepMolOrbit3D(dt = 1) {
   for (const site of molSites) {
     if (!site.shellGroups) continue;
     const occupied = [...new Set(site.elecs.map(e => e.shell))];
     for (const s of occupied) {
       const sp = orbShellSpeed[s] ?? 8, radAmp = orbShellRadAmp[s] ?? 0.2;
       const wandDeg = orbShellWander[s] ?? 45, maxLen = orbShellTrailLen[s] ?? 140;
-      const phStep = 0.05 * sp;
+      const phStep = 0.05 * sp * dt;
       for (const grp of site.shellGroups[s]) {
-        grp.radPh += 0.036 * sp;
+        grp.radPh += 0.036 * sp * dt;
         const r = 1 + radAmp * Math.sin(grp.radPh);
-        const precSpeed = 0.006 * sp * (wandDeg / 45);
+        const precSpeed = 0.006 * sp * (wandDeg / 45) * dt;
         grp.ax = _o3Precess(grp.ax, grp.rot, precSpeed);
         grp.e1 = _o3Precess(grp.e1, grp.rot, precSpeed);
         const e1 = grp.e1, e2 = _o3Cross(grp.ax, e1);
@@ -4803,14 +4958,28 @@ function drawMolTrails(ctx) {
 
 // ─── End molecule mode ────────────────────────────────────────────────────────
 
-function idleParticleLoop() {
+function idleParticleLoop(now) {
+  const _isOrbit = currentTab === 'orbit3d';
+  const _orb3dReady = _quality === 'hi-res' || now - _orb3dLast >= 33;
+
   if (animParent && showParticles) updateParticleJitter(animParent.particles.length, 1, true);
   if (currentMode === 'molecules') {
-    if (currentTab === 'orbit3d') { if (!orb3dPaused) stepMolOrbit3D(); }
-    else stepMoleculeElectrons();
+    if (_isOrbit) {
+      if (!orb3dPaused && _orb3dReady) {
+        const _dt = Math.min((_orb3dLast > 0 ? now - _orb3dLast : 16.67) / 16.67, 2.5);
+        _orb3dLast = now;
+        stepMolOrbit3D(_dt);
+      }
+    } else stepMoleculeElectrons();
   } else {
-    if (currentTab === 'orbit3d') { if (!orb3dPaused) { stepOrbit3D(); stepOrbit3DB(); } }
-    else {
+    if (_isOrbit) {
+      if (!orb3dPaused && _orb3dReady) {
+        const _dt = Math.min((_orb3dLast > 0 ? now - _orb3dLast : 16.67) / 16.67, 2.5);
+        _orb3dLast = now;
+        stepOrbit3D(_dt);
+        stepOrbit3DB(_dt);
+      }
+    } else {
       stepElectronsShells();
       if (animParentB && electronsB.length) {
         const _confineB = currentTab === 'shells' && bondShellsSubtractB;
@@ -4821,7 +4990,7 @@ function idleParticleLoop() {
     _stepBondElecSecond();
     _stepBondDots();
   }
-  if (animParent || currentTab === 'orbit3d' || currentMode === 'molecules') draw();
+  if ((!_isOrbit || _orb3dReady) && (animParent || _isOrbit || currentMode === 'molecules')) draw();
   idleParticleRAF = requestAnimationFrame(idleParticleLoop);
 }
 
