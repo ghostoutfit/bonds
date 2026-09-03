@@ -6024,15 +6024,15 @@ initNuclei();
 // Benchmark returns minimum of two 100-particle timed passes (cold-start eliminated).
 // Gradient rendering only fires in hi-res mode; detailed/simple use flat fill.
 //   < 12ms → hi-res    (modern + mid-range hardware; occasional frame drops OK)
-//   12–15ms → detailed (budget Chromebooks lightly loaded; flat-fill 60fps viable)
-//   > 15ms → simple    (Chromebooks under load, old Atom/Celeron; needs 30fps gate)
+//   12–14ms → detailed (mid-range; flat-fill 60fps viable)
+//   > 14ms → simple    (budget Chromebooks + under load; needs 30fps gate)
 // Hi-res/detailed defaults: all 3 options shown.
 // Simple default: hi-res option removed.
 (function _startupBenchmark() {
   const ms = _runPerfBenchmark();
   const el = document.getElementById('benchScore');
   if (el) el.textContent = `bench ${ms.toFixed(1)}ms`;
-  if (ms > 15) {
+  if (ms > 14) {
     const hiOpt = document.querySelector('#qualitySelect option[value="hi-res"]');
     if (hiOpt) hiOpt.remove();
     _applyQuality('simple');
