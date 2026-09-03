@@ -830,7 +830,7 @@
       <button class="tab-btn" data-mode="molecules">Molecules / Crystals</button>
     </div>
     <div style="display:flex;align-items:center;gap:6px;margin-left:auto;">
-      <span style="font-size:10px;font-weight:600;letter-spacing:0.06em;color:rgba(255,255,255,0.45);white-space:nowrap;">Field Test Version 1.5</span>
+      <span style="font-size:10px;font-weight:600;letter-spacing:0.06em;color:rgba(255,255,255,0.45);white-space:nowrap;">Field Test Version 1.6</span>
       <select id="qualitySelect">
         <option value="hi-res">Hi-res</option>
         <option value="detailed">Detailed</option>
@@ -1105,33 +1105,40 @@ function _applyQuality(level) {
 }
 
 // Draws 100 gradient+shadowBlur particles to an offscreen canvas and returns ms.
-// getImageData() at the end forces a GPU sync so the time is real.
-// A 15-particle warm-up pass runs first to settle JIT and GPU init cost.
+// getImageData() forces a GPU→CPU sync so the time reflects real GPU cost.
+// Warm-up: 40 particles + a getImageData flush to prime the GPU readback path.
+// Timed pass runs twice; minimum is returned to eliminate cold-start outliers.
 function _runPerfBenchmark() {
   const oc = document.createElement('canvas');
   oc.width = 300; oc.height = 300;
   const dc = oc.getContext('2d');
   const R = PARTICLE_RADIUS;
-  for (let i = 0; i < 15; i++) {
-    const x = 15 + (i % 5) * 40, y = 15 + Math.floor(i / 5) * 40;
+  function _draw100() {
+    for (let i = 0; i < 100; i++) {
+      const x = 15 + (i % 10) * 27, y = 15 + Math.floor(i / 10) * 27;
+      const g1 = dc.createRadialGradient(x, y, 0, x, y, R * 1.1);
+      g1.addColorStop(0, '#ff1a65'); g1.addColorStop(0.82, '#ff1a65'); g1.addColorStop(1, 'rgba(0,0,0,0)');
+      dc.fillStyle = g1; dc.beginPath(); dc.arc(x, y, R * 1.1, 0, Math.PI * 2); dc.fill();
+      const g2 = dc.createRadialGradient(x, y, 0, x, y, R);
+      g2.addColorStop(0, '#ff80b0'); g2.addColorStop(0.5, '#ff80b0'); g2.addColorStop(1, 'rgba(0,0,0,0)');
+      dc.save(); dc.shadowColor = '#ff80b0'; dc.shadowBlur = 8; dc.globalAlpha = 0.82;
+      dc.fillStyle = g2; dc.beginPath(); dc.arc(x, y, R, 0, Math.PI * 2); dc.fill();
+      dc.restore(); dc.globalAlpha = 1;
+    }
+    dc.getImageData(0, 0, 1, 1); // GPU→CPU sync
+  }
+  // Warm-up: 40 particles + flush to settle JIT, GPU shader compilation, and readback path
+  for (let i = 0; i < 40; i++) {
+    const x = 15 + (i % 8) * 35, y = 15 + Math.floor(i / 8) * 35;
     const g = dc.createRadialGradient(x, y, 0, x, y, R);
     g.addColorStop(0, '#ff1a65'); g.addColorStop(1, 'rgba(0,0,0,0)');
     dc.fillStyle = g; dc.beginPath(); dc.arc(x, y, R, 0, Math.PI * 2); dc.fill();
   }
-  const t0 = performance.now();
-  for (let i = 0; i < 100; i++) {
-    const x = 15 + (i % 10) * 27, y = 15 + Math.floor(i / 10) * 27;
-    const g1 = dc.createRadialGradient(x, y, 0, x, y, R * 1.1);
-    g1.addColorStop(0, '#ff1a65'); g1.addColorStop(0.82, '#ff1a65'); g1.addColorStop(1, 'rgba(0,0,0,0)');
-    dc.fillStyle = g1; dc.beginPath(); dc.arc(x, y, R * 1.1, 0, Math.PI * 2); dc.fill();
-    const g2 = dc.createRadialGradient(x, y, 0, x, y, R);
-    g2.addColorStop(0, '#ff80b0'); g2.addColorStop(0.5, '#ff80b0'); g2.addColorStop(1, 'rgba(0,0,0,0)');
-    dc.save(); dc.shadowColor = '#ff80b0'; dc.shadowBlur = 8; dc.globalAlpha = 0.82;
-    dc.fillStyle = g2; dc.beginPath(); dc.arc(x, y, R, 0, Math.PI * 2); dc.fill();
-    dc.restore(); dc.globalAlpha = 1;
-  }
-  dc.getImageData(0, 0, 1, 1); // force GPU flush so timing is real
-  return performance.now() - t0;
+  dc.getImageData(0, 0, 1, 1);
+  // Two timed passes — take the minimum to get sustained throughput, not cold-start cost
+  const t0 = performance.now(); _draw100(); const r0 = performance.now() - t0;
+  const t1 = performance.now(); _draw100(); const r1 = performance.now() - t1;
+  return Math.min(r0, r1);
 }
 
 function resize() {
@@ -6012,17 +6019,19 @@ syncModeButtons();
 syncTabButtons();
 initNuclei();
 
-// Startup benchmark — measure actual gradient render cost and set initial quality.
-// Thresholds are per 100 particles; the full nucleus is ~220 so multiply by ~2.2
-// to project real frame cost.
-//   < 4ms / 100p → hi-res    (nucleus ~8.8ms projected — comfortable at 60fps)
-//   4–10ms / 100p → detailed (nucleus 8.8–22ms — 60fps viable with 4-bucket mode)
-//   > 10ms / 100p → simple   (nucleus >22ms — needs 30fps gate and 2-bucket mode)
+// Startup benchmark — measure gradient render cost, set initial quality.
+// Benchmark returns minimum of two 100-particle timed passes (cold-start eliminated).
+// Gradient rendering only fires in hi-res mode; detailed/simple use flat fill.
+// So the gradient score gates hi-res only; the simple threshold is set high
+// to avoid pushing capable machines down — only truly budget hardware hits it.
+//   < 4ms  → hi-res    (gradient nucleus ~8.8ms, comfortable 60fps headroom)
+//   4–20ms → detailed  (flat-fill nucleus is fast; 4-bucket 60fps is viable)
+//   > 20ms → simple    (genuinely slow GPU; use 30fps gate + 2-bucket mode)
 // Hi-res/detailed defaults: all 3 options shown.
-// Simple default: hi-res option removed (too slow to be useful).
+// Simple default: hi-res option removed.
 (function _startupBenchmark() {
   const ms = _runPerfBenchmark();
-  if (ms > 10) {
+  if (ms > 20) {
     const hiOpt = document.querySelector('#qualitySelect option[value="hi-res"]');
     if (hiOpt) hiOpt.remove();
     _applyQuality('simple');
