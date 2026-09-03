@@ -830,9 +830,10 @@
       <button class="tab-btn" data-mode="molecules">Molecules / Crystals</button>
     </div>
     <div style="display:flex;align-items:center;gap:6px;margin-left:auto;">
-      <span style="font-size:10px;font-weight:600;letter-spacing:0.06em;color:rgba(255,255,255,0.45);white-space:nowrap;">Field Test Version 1.4</span>
+      <span style="font-size:10px;font-weight:600;letter-spacing:0.06em;color:rgba(255,255,255,0.45);white-space:nowrap;">Field Test Version 1.5</span>
       <select id="qualitySelect">
         <option value="hi-res">Hi-res</option>
+        <option value="detailed">Detailed</option>
         <option value="simple">Simple</option>
       </select>
       <button class="theme-btn active" id="themeA" title="Synthwave"></button>
@@ -6014,16 +6015,21 @@ initNuclei();
 // Startup benchmark — measure actual gradient render cost and set initial quality.
 // Thresholds are per 100 particles; the full nucleus is ~220 so multiply by ~2.2
 // to project real frame cost.
-//   < 6ms / 100p → hi-res   (< ~13ms projected — fine at 60fps)
-//   > 6ms / 100p → simple   (> ~13ms projected — minimal rendering)
+//   < 4ms / 100p → hi-res    (nucleus ~8.8ms projected — comfortable at 60fps)
+//   4–10ms / 100p → detailed (nucleus 8.8–22ms — 60fps viable with 4-bucket mode)
+//   > 10ms / 100p → simple   (nucleus >22ms — needs 30fps gate and 2-bucket mode)
+// Hi-res/detailed defaults: all 3 options shown.
+// Simple default: hi-res option removed (too slow to be useful).
 (function _startupBenchmark() {
   const ms = _runPerfBenchmark();
-  if (ms > 6) {
+  if (ms > 10) {
     const hiOpt = document.querySelector('#qualitySelect option[value="hi-res"]');
     if (hiOpt) hiOpt.remove();
     _applyQuality('simple');
+  } else if (ms > 4) {
+    _applyQuality('detailed');
   }
-  // else stays 'hi-res' (default)
+  // else stays 'hi-res' (default); all three options remain available
 }());
 
 _reapplyCurrentBond();
