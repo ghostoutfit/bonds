@@ -1142,6 +1142,50 @@ function _runPerfBenchmark() {
   return Math.min(r0, r1);
 }
 
+// Trail benchmark — models the actual orbit3D stroke pattern:
+// 3 colors × 32 buckets = 96 beginPath/stroke calls, each drawing slices of
+// 10 trails (140 pts each) via quadraticCurveTo, matching hi-res rendering exactly.
+function _runTrailBenchmark() {
+  const oc = document.createElement('canvas');
+  oc.width = 800; oc.height = 600;
+  const dc = oc.getContext('2d');
+  dc.lineCap = 'round'; dc.lineJoin = 'round'; dc.lineWidth = 1.5;
+  const _nB = 32, trailLen = 140;
+  const colors = ['#4488ff', '#44ff44', '#ff66cc'];
+  // 10 pre-computed trails with realistic curved shapes
+  const trails = Array.from({length: 10}, (_, t) =>
+    Array.from({length: trailLen}, (_, i) => [
+      100 + (t % 5) * 130 + Math.sin(i * 0.22 + t * 1.3) * 45,
+      70  + Math.floor(t / 5) * 260 + i * 2.2 + Math.cos(i * 0.17 + t) * 22
+    ])
+  );
+  function _drawTrails() {
+    for (let ci = 0; ci < colors.length; ci++) {
+      dc.strokeStyle = colors[ci];
+      for (let b = 0; b < _nB; b++) {
+        dc.globalAlpha = ((b + 1) / _nB) * 0.75;
+        dc.beginPath();
+        for (const pts of trails) {
+          const np = pts.length;
+          const i0 = Math.round(b / _nB * (np - 1));
+          const i1 = Math.round((b + 1) / _nB * (np - 1));
+          if (i1 <= i0) continue;
+          dc.moveTo(pts[i0][0], pts[i0][1]);
+          for (let i = i0 + 1; i <= i1; i++)
+            dc.quadraticCurveTo(pts[i-1][0], pts[i-1][1], (pts[i-1][0]+pts[i][0])/2, (pts[i-1][1]+pts[i][1])/2);
+        }
+        dc.stroke();
+      }
+    }
+    dc.getImageData(0, 0, 1, 1);
+  }
+  // Warm-up + flush
+  _drawTrails(); dc.getImageData(0, 0, 1, 1);
+  const t0 = performance.now(); _drawTrails(); const r0 = performance.now() - t0;
+  const t1 = performance.now(); _drawTrails(); const r1 = performance.now() - t1;
+  return Math.min(r0, r1);
+}
+
 function resize() {
   canvas.width   = window.innerWidth;
   canvas.height  = window.innerHeight;
@@ -6030,8 +6074,9 @@ initNuclei();
 // Simple default: hi-res option removed.
 (function _startupBenchmark() {
   const ms = _runPerfBenchmark();
+  const msT = _runTrailBenchmark();
   const el = document.getElementById('benchScore');
-  if (el) el.textContent = `bench ${ms.toFixed(1)}ms`;
+  if (el) el.textContent = `grad ${ms.toFixed(1)}ms  trail ${msT.toFixed(1)}ms`;
   if (ms > 14) {
     const hiOpt = document.querySelector('#qualitySelect option[value="hi-res"]');
     if (hiOpt) hiOpt.remove();
